@@ -26,7 +26,7 @@ async function main() {
   console.log("║   TERRACARE SOVEREIGN HEALTH INFRASTRUCTURE DEPLOYMENT    ║");
   console.log("║           Tokenless • Gasless • Hash-Only                 ║");
   console.log("╚════════════════════════════════════════════════════════════╝");
-  console.log("\nDeploying with:", deployer.address);
+  console.log("\nDeploying with:", await deployer.getAddress());
   console.log("Network:", hre.network.name);
   console.log("Chain ID:", (await hre.ethers.provider.getNetwork()).chainId);
   console.log("\n");
@@ -34,7 +34,7 @@ async function main() {
   const deployments = {
     network: hre.network.name,
     chainId: (await hre.ethers.provider.getNetwork()).chainId,
-    deployer: deployer.address,
+    deployer: await deployer.getAddress(),
     timestamp: new Date().toISOString(),
     contracts: {}
   };
@@ -47,33 +47,36 @@ async function main() {
   const SovereignIdentity = await hre.ethers.getContractFactory("SovereignIdentity");
   const sovereignIdentity = await SovereignIdentity.deploy();
   await sovereignIdentity.waitForDeployment();
+  const sovereignIdentityAddress = await sovereignIdentity.getAddress();
   deployments.contracts.SovereignIdentity = {
-    address: await sovereignIdentity.getAddress(),
+    address: sovereignIdentityAddress,
     name: "SovereignIdentity"
   };
-  console.log("✓ SovereignIdentity:", await sovereignIdentity.getAddress());
+  console.log("✓ SovereignIdentity:", sovereignIdentityAddress);
 
   // Deploy AccessGovernor
   console.log("Deploying AccessGovernor...");
   const AccessGovernor = await hre.ethers.getContractFactory("AccessGovernor");
-  const accessGovernor = await AccessGovernor.deploy(await sovereignIdentity.getAddress());
+  const accessGovernor = await AccessGovernor.deploy();
   await accessGovernor.waitForDeployment();
+  const accessGovernorAddress = await accessGovernor.getAddress();
   deployments.contracts.AccessGovernor = {
-    address: await accessGovernor.getAddress(),
+    address: accessGovernorAddress,
     name: "AccessGovernor"
   };
-  console.log("✓ AccessGovernor:", await accessGovernor.getAddress());
+  console.log("✓ AccessGovernor:", accessGovernorAddress);
 
   // Deploy AuditTrail
   console.log("Deploying AuditTrail...");
   const AuditTrail = await hre.ethers.getContractFactory("AuditTrail");
-  const auditTrail = await AuditTrail.deploy(sovereignIdentity.address);
+  const auditTrail = await AuditTrail.deploy();
   await auditTrail.waitForDeployment();
+  const auditTrailAddress = await auditTrail.getAddress();
   deployments.contracts.AuditTrail = {
-    address: await auditTrail.getAddress(),
+    address: auditTrailAddress,
     name: "AuditTrail"
   };
-  console.log("✓ AuditTrail:", await auditTrail.getAddress());
+  console.log("✓ AuditTrail:", auditTrailAddress);
 
   // ============ PHASE 2: System Adapters ============
   console.log("\n📦 PHASE 2: Deploying System Adapters...\n");
@@ -82,97 +85,103 @@ async function main() {
   console.log("Deploying TholosAdapter...");
   const TholosAdapter = await hre.ethers.getContractFactory("TholosAdapter");
   const tholosAdapter = await TholosAdapter.deploy(
-    await sovereignIdentity.getAddress(),
-    await accessGovernor.getAddress(),
-    await auditTrail.getAddress()
+    sovereignIdentityAddress,
+    accessGovernorAddress,
+    auditTrailAddress
   );
   await tholosAdapter.waitForDeployment();
+  const tholosAdapterAddress = await tholosAdapter.getAddress();
   deployments.contracts.TholosAdapter = {
-    address: await tholosAdapter.getAddress(),
+    address: tholosAdapterAddress,
     name: "TholosAdapter",
     system: "Tholos"
   };
-  console.log("✓ TholosAdapter:", await tholosAdapter.getAddress());
+  console.log("✓ TholosAdapter:", tholosAdapterAddress);
 
   // Deploy HarmonicAdapter
   console.log("Deploying HarmonicAdapter...");
   const HarmonicAdapter = await hre.ethers.getContractFactory("HarmonicAdapter");
   const harmonicAdapter = await HarmonicAdapter.deploy(
-    await sovereignIdentity.getAddress(),
-    await accessGovernor.getAddress(),
-    auditTrail.address
+    sovereignIdentityAddress,
+    accessGovernorAddress,
+    auditTrailAddress
   );
   await harmonicAdapter.waitForDeployment();
+  const harmonicAdapterAddress = await harmonicAdapter.getAddress();
   deployments.contracts.HarmonicAdapter = {
-    address: await harmonicAdapter.getAddress(),
+    address: harmonicAdapterAddress,
     name: "HarmonicAdapter",
     system: "Harmonic"
   };
-  console.log("✓ HarmonicAdapter:", await harmonicAdapter.getAddress());
+  console.log("✓ HarmonicAdapter:", harmonicAdapterAddress);
 
   // Deploy TerratoneAdapter
   console.log("Deploying TerratoneAdapter...");
   const TerratoneAdapter = await hre.ethers.getContractFactory("TerratoneAdapter");
   const terratoneAdapter = await TerratoneAdapter.deploy(
-    await sovereignIdentity.getAddress(),
-    await accessGovernor.getAddress(),
-    auditTrail.address
+    sovereignIdentityAddress,
+    accessGovernorAddress,
+    auditTrailAddress
   );
   await terratoneAdapter.waitForDeployment();
+  const terratoneAdapterAddress = await terratoneAdapter.getAddress();
   deployments.contracts.TerratoneAdapter = {
-    address: await terratoneAdapter.getAddress(),
+    address: terratoneAdapterAddress,
     name: "TerratoneAdapter",
     system: "Terratone"
   };
-  console.log("✓ TerratoneAdapter:", await terratoneAdapter.getAddress());
+  console.log("✓ TerratoneAdapter:", terratoneAdapterAddress);
 
   // Deploy SofieOSAdapter
   console.log("Deploying SofieOSAdapter...");
   const SofieOSAdapter = await hre.ethers.getContractFactory("SofieOSAdapter");
   const sofieOSAdapter = await SofieOSAdapter.deploy(
-    await sovereignIdentity.getAddress(),
-    await accessGovernor.getAddress(),
-    auditTrail.address
+    sovereignIdentityAddress,
+    accessGovernorAddress,
+    auditTrailAddress
   );
   await sofieOSAdapter.waitForDeployment();
+  const sofieOSAdapterAddress = await sofieOSAdapter.getAddress();
   deployments.contracts.SofieOSAdapter = {
-    address: await sofieOSAdapter.getAddress(),
+    address: sofieOSAdapterAddress,
     name: "SofieOSAdapter",
     system: "SofieOS"
   };
-  console.log("✓ SofieOSAdapter:", await sofieOSAdapter.getAddress());
+  console.log("✓ SofieOSAdapter:", sofieOSAdapterAddress);
 
   // Deploy LlamaAdapter
   console.log("Deploying LlamaAdapter...");
   const LlamaAdapter = await hre.ethers.getContractFactory("LlamaAdapter");
   const llamaAdapter = await LlamaAdapter.deploy(
-    await sovereignIdentity.getAddress(),
-    await accessGovernor.getAddress(),
-    auditTrail.address
+    sovereignIdentityAddress,
+    accessGovernorAddress,
+    auditTrailAddress
   );
   await llamaAdapter.waitForDeployment();
+  const llamaAdapterAddress = await llamaAdapter.getAddress();
   deployments.contracts.LlamaAdapter = {
-    address: await llamaAdapter.getAddress(),
+    address: llamaAdapterAddress,
     name: "LlamaAdapter",
     system: "LlamaBackend"
   };
-  console.log("✓ LlamaAdapter:", await llamaAdapter.getAddress());
+  console.log("✓ LlamaAdapter:", llamaAdapterAddress);
 
   // Deploy MapAdapter
   console.log("Deploying MapAdapter...");
   const MapAdapter = await hre.ethers.getContractFactory("MapAdapter");
   const mapAdapter = await MapAdapter.deploy(
-    await sovereignIdentity.getAddress(),
-    await accessGovernor.getAddress(),
-    auditTrail.address
+    sovereignIdentityAddress,
+    accessGovernorAddress,
+    auditTrailAddress
   );
   await mapAdapter.waitForDeployment();
+  const mapAdapterAddress = await mapAdapter.getAddress();
   deployments.contracts.MapAdapter = {
-    address: await mapAdapter.getAddress(),
+    address: mapAdapterAddress,
     name: "MapAdapter",
     system: "MapSystem"
   };
-  console.log("✓ MapAdapter:", await mapAdapter.getAddress());
+  console.log("✓ MapAdapter:", mapAdapterAddress);
 
   // ============ PHASE 3: PoA Consensus ============
   console.log("\n📦 PHASE 3: Deploying PoA Consensus...\n");
@@ -181,88 +190,20 @@ async function main() {
   console.log("Deploying PoAConsensus...");
   const PoAConsensus = await hre.ethers.getContractFactory("PoAConsensus");
   const poaConsensus = await PoAConsensus.deploy(
-    await sovereignIdentity.getAddress(),
-    auditTrail.address
+    sovereignIdentityAddress,
+    auditTrailAddress
   );
   await poaConsensus.waitForDeployment();
+  const poaConsensusAddress = await poaConsensus.getAddress();
   deployments.contracts.PoAConsensus = {
-    address: await poaConsensus.getAddress(),
+    address: poaConsensusAddress,
     name: "PoAConsensus",
     system: "SandIronNode"
   };
-  console.log("✓ PoAConsensus:", await poaConsensus.getAddress());
+  console.log("✓ PoAConsensus:", poaConsensusAddress);
 
-  // ============ PHASE 4: System Configuration ============
-  console.log("\n📦 PHASE 4: Configuring Cross-System Connections...\n");
-
-  // Set system adapters in SovereignIdentity
-  console.log("Setting system adapters in SovereignIdentity...");
-  
-  const SystemType = {
-    Unknown: 0,
-    Heartware: 1,
-    Tholos: 2,
-    Harmonic: 3,
-    Terratone: 4,
-    SofieOS: 5,
-    LlamaBackend: 6,
-    MapSystem: 7,
-    SandIronNode: 8,
-    Emergency: 9
-  };
-
-  await (await sovereignIdentity.setSystemAdapter(SystemType.Tholos, tholosAdapter.address)).wait();
-  await (await sovereignIdentity.setSystemAdapter(SystemType.Harmonic, harmonicAdapter.address)).wait();
-  await (await sovereignIdentity.setSystemAdapter(SystemType.Terratone, terratoneAdapter.address)).wait();
-  await (await sovereignIdentity.setSystemAdapter(SystemType.SofieOS, sofieOSAdapter.address)).wait();
-  await (await sovereignIdentity.setSystemAdapter(SystemType.LlamaBackend, llamaAdapter.address)).wait();
-  await (await sovereignIdentity.setSystemAdapter(SystemType.MapSystem, mapAdapter.address)).wait();
-  await (await sovereignIdentity.setSystemAdapter(SystemType.SandIronNode, poaConsensus.address)).wait();
-
-  console.log("✓ All system adapters configured");
-
-  // ============ PHASE 5: Register Action Types ============
-  console.log("\n📦 PHASE 5: Registering Audit Action Types...\n");
-
-  // Register common action types
-  const actionTypes = [
-    { hash: hre.ethers.utils?.keccak256?.(hre.ethers.utils.toUtf8Bytes("CREATE_RECORD")) || 
-            hre.ethers.keccak256(hre.ethers.toUtf8Bytes("CREATE_RECORD")), 
-      name: "Create Clinical Record", system: SystemType.Tholos },
-    { hash: hre.ethers.utils?.keccak256?.(hre.ethers.utils.toUtf8Bytes("UPDATE_RECORD")) ||
-            hre.ethers.keccak256(hre.ethers.toUtf8Bytes("UPDATE_RECORD")), 
-      name: "Update Clinical Record", system: SystemType.Tholos },
-    { hash: hre.ethers.utils?.keccak256?.(hre.ethers.utils.toUtf8Bytes("BIOFEEDBACK_SESSION")) ||
-            hre.ethers.keccak256(hre.ethers.toUtf8Bytes("BIOFEEDBACK_SESSION")), 
-      name: "Biofeedback Session", system: SystemType.Harmonic },
-    { hash: hre.ethers.utils?.keccak256?.(hre.ethers.utils.toUtf8Bytes("TREATMENT_SESSION")) ||
-            hre.ethers.keccak256(hre.ethers.toUtf8Bytes("TREATMENT_SESSION")), 
-      name: "Frequency Treatment", system: SystemType.Terratone },
-    { hash: hre.ethers.utils?.keccak256?.(hre.ethers.utils.toUtf8Bytes("RECOMMENDATION_GENERATED")) ||
-            hre.ethers.keccak256(hre.ethers.toUtf8Bytes("RECOMMENDATION_GENERATED")), 
-      name: "AI Recommendation", system: SystemType.LlamaBackend },
-    { hash: hre.ethers.utils?.keccak256?.(hre.ethers.utils.toUtf8Bytes("DEVICE_REGISTERED")) ||
-            hre.ethers.keccak256(hre.ethers.toUtf8Bytes("DEVICE_REGISTERED")), 
-      name: "Device Registration", system: SystemType.SofieOS },
-  ];
-
-  for (const action of actionTypes) {
-    try {
-      await (await auditTrail.registerActionType(
-        action.hash,
-        action.name,
-        action.system,
-        true,  // requiresConsent
-        2555   // retentionDays (~7 years for HIPAA)
-      )).wait();
-    } catch (e) {
-      console.log(`Note: Action type registration skipped (may already exist)`);
-    }
-  }
-  console.log("✓ Action types registered");
-
-  // ============ PHASE 6: Generate Configuration ============
-  console.log("\n📦 PHASE 6: Generating Configuration Files...\n");
+  // ============ PHASE 4: Generate Configuration ============
+  console.log("\n📦 PHASE 4: Generating Configuration Files...\n");
 
   // Save deployment info
   const deploymentPath = path.join(__dirname, "..", "artifacts", "deployment.json");
@@ -278,20 +219,20 @@ async function main() {
 # Chain ID: ${deployments.chainId}
 
 # Core Contracts
-TERRACARE_SOVEREIGN_IDENTITY=${sovereignIdentity.address}
-TERRACARE_ACCESS_GOVERNOR=${await accessGovernor.getAddress()}
-TERRACARE_AUDIT_TRAIL=${auditTrail.address}
+TERRACARE_SOVEREIGN_IDENTITY=${sovereignIdentityAddress}
+TERRACARE_ACCESS_GOVERNOR=${accessGovernorAddress}
+TERRACARE_AUDIT_TRAIL=${auditTrailAddress}
 
 # System Adapters
-TERRACARE_THOLOS_ADAPTER=${tholosAdapter.address}
-TERRACARE_HARMONIC_ADAPTER=${harmonicAdapter.address}
-TERRACARE_TERRATONE_ADAPTER=${terratoneAdapter.address}
-TERRACARE_SOFIEOS_ADAPTER=${sofieOSAdapter.address}
-TERRACARE_LLAMA_ADAPTER=${llamaAdapter.address}
-TERRACARE_MAP_ADAPTER=${mapAdapter.address}
+TERRACARE_THOLOS_ADAPTER=${tholosAdapterAddress}
+TERRACARE_HARMONIC_ADAPTER=${harmonicAdapterAddress}
+TERRACARE_TERRATONE_ADAPTER=${terratoneAdapterAddress}
+TERRACARE_SOFIEOS_ADAPTER=${sofieOSAdapterAddress}
+TERRACARE_LLAMA_ADAPTER=${llamaAdapterAddress}
+TERRACARE_MAP_ADAPTER=${mapAdapterAddress}
 
 # Consensus
-TERRACARE_POA_CONSENSUS=${poaConsensus.address}
+TERRACARE_POA_CONSENSUS=${poaConsensusAddress}
 
 # Network
 TERRACARE_CHAIN_ID=${deployments.chainId}
@@ -343,18 +284,18 @@ TERRACARE_RPC_URL=${hre.network.config.url || "http://localhost:8545"}
   console.log("📋 Contract Addresses:");
   console.log("─────────────────────────────────────────────────────────────");
   console.log("Core Infrastructure:");
-  console.log("  SovereignIdentity: ", sovereignIdentity.address);
-  console.log("  AccessGovernor:    ", accessGovernor.address);
-  console.log("  AuditTrail:        ", auditTrail.address);
+  console.log("  SovereignIdentity: ", sovereignIdentityAddress);
+  console.log("  AccessGovernor:    ", accessGovernorAddress);
+  console.log("  AuditTrail:        ", auditTrailAddress);
   console.log("\nSystem Adapters:");
-  console.log("  TholosAdapter:     ", tholosAdapter.address);
-  console.log("  HarmonicAdapter:   ", harmonicAdapter.address);
-  console.log("  TerratoneAdapter:  ", terratoneAdapter.address);
-  console.log("  SofieOSAdapter:    ", sofieOSAdapter.address);
-  console.log("  LlamaAdapter:      ", llamaAdapter.address);
-  console.log("  MapAdapter:        ", mapAdapter.address);
+  console.log("  TholosAdapter:     ", tholosAdapterAddress);
+  console.log("  HarmonicAdapter:   ", harmonicAdapterAddress);
+  console.log("  TerratoneAdapter:  ", terratoneAdapterAddress);
+  console.log("  SofieOSAdapter:    ", sofieOSAdapterAddress);
+  console.log("  LlamaAdapter:      ", llamaAdapterAddress);
+  console.log("  MapAdapter:        ", mapAdapterAddress);
   console.log("\nConsensus:");
-  console.log("  PoAConsensus:      ", poaConsensus.address);
+  console.log("  PoAConsensus:      ", poaConsensusAddress);
   console.log("─────────────────────────────────────────────────────────────\n");
 
   console.log("🔐 Next Steps:");

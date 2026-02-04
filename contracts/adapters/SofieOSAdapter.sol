@@ -1,358 +1,200 @@
 // SPDX-License-Identifier: MIT
-// Pillar-1: Hardware abstraction with on-chain device registry
-// Pillar-2: First Principles: OS owns the hardware layer
-// Pillar-3: Genius Channeled - Buckminster Fuller (synergetic systems)
-// Pillar-4: Device management as strategic moat
-// Pillar-5: Dead Man's Switch integration for devices
-// Pillar-6: OODA loops for device security
-// Pillar-7: Build for hardware longevity
-
-pragma solidity ^0.8.24;
-
-import "../SovereignIdentity.sol";
-import "../AccessGovernor.sol";
-import "../AuditTrail.sol";
-
 /**
  * @title SofieOSAdapter
- * @dev Core OS integration adapter for Terracare
- *      - Device registration and management
- *      - OS-level permission caching
- *      - Hardware abstraction layer calls
- *      - Device heartbeat monitoring
+ * @notice Bridge for SofieOS oracle and device integration
+ * @dev Implements ISofieOracle for cross-system data feeds
  */
-contract SofieOSAdapter {
-    // ============ Structs ============
-    
-    struct Device {
-        bytes32 deviceHash;
-        address owner;
-        bytes32 deviceType;         // "sensor", "wearable", "terminal", etc.
-        bytes32 publicKeyHash;      // For encrypted communication
-        uint256 registeredAt;
-        uint256 lastHeartbeat;
-        bool active;
-        bytes32 firmwareHash;
-        bytes32 configHash;         // Device configuration hash
-    }
+pragma solidity ^0.8.24;
 
-    struct PermissionCache {
-        bytes32 permissionHash;
-        uint256 cachedAt;
-        uint256 expiresAt;
-        bool valid;
-    }
+import {ISofieOracle} from "../interfaces/ISofieOracle.sol";
 
-    struct OSCommand {
-        bytes32 commandHash;
-        address issuer;
-        bytes32 targetDevice;
-        uint256 issuedAt;
-        uint256 executeAfter;
-        bool executed;
-        bytes32 resultHash;
-    }
-
-    // ============ State ============
+contract SofieOSAdapter is ISofieOracle {
     
-    SovereignIdentity public identity;
-    AccessGovernor public accessGovernor;
-    AuditTrail public auditTrail;
+    // ============ Storage ============
     
-    address public governance;
+    address public sovereignIdentity;
+    address public accessGovernor;
+    address public auditTrail;
     
-    // Device hash => Device
-    mapping(bytes32 => Device) public devices;
-    mapping(address => bytes32[]) public ownerDevices;
+    // Feed ID => feed data
+    mapping(bytes32 => DataFeed) private dataFeeds;
     
-    // patient => permission cache
-    mapping(address => PermissionCache) public permissionCaches;
+    // Request ID => request data
+    mapping(bytes32 => OracleRequest) private requests;
     
-    // Command hash => OSCommand
-    mapping(bytes32 => OSCommand) public commands;
+    // Authorized oracle providers
+    mapping(address => bool) public oracleProviders;
     
-    // Authorized OS nodes
-    mapping(address => bool) public authorizedOSNodes;
+    // Nonce for request ID generation
+    uint256 private requestNonce;
     
-    // Heartbeat timeout (default 5 minutes)
-    uint256 public heartbeatTimeout = 300;
-
-    // ============ Events ============
-    
-    event DeviceRegistered(
-        bytes32 indexed deviceHash,
-        address indexed owner,
-        bytes32 deviceType
-    );
-    
-    event DeviceHeartbeat(
-        bytes32 indexed deviceHash,
-        uint256 timestamp
-    );
-    
-    event DeviceDeactivated(
-        bytes32 indexed deviceHash,
-        bytes32 reasonHash
-    );
-    
-    event PermissionCached(
-        address indexed patient,
-        bytes32 permissionHash,
-        uint256 expiresAt
-    );
-    
-    event OSCommandIssued(
-        bytes32 indexed commandHash,
-        bytes32 indexed targetDevice,
-        uint256 executeAfter
-    );
-    
-    event OSCommandExecuted(
-        bytes32 indexed commandHash,
-        bytes32 resultHash
-    );
-
     // ============ Modifiers ============
     
-    modifier onlyGovernance() {
-        require(msg.sender == governance, "SofieOSAdapter: Not governance");
+    modifier onlyOracleProvider() {
+        require(oracleProviders[msg.sender], "SofieOSAdapter: Not oracle provider");
         _;
     }
-
-    modifier onlyAuthorizedOSNode() {
-        require(
-            authorizedOSNodes[msg.sender] || msg.sender == governance,
-            "SofieOSAdapter: Not authorized OS node"
-        );
-        _;
-    }
-
-    modifier onlyDeviceOwner(bytes32 deviceHash) {
-        require(devices[deviceHash].owner == msg.sender, "SofieOSAdapter: Not device owner");
-        _;
-    }
-
+    
     // ============ Constructor ============
     
     constructor(
-        address _identity,
+        address _sovereignIdentity,
         address _accessGovernor,
         address _auditTrail
     ) {
-        identity = SovereignIdentity(_identity);
-        accessGovernor = AccessGovernor(_accessGovernor);
-        auditTrail = AuditTrail(_auditTrail);
-        governance = msg.sender;
+        sovereignIdentity = _sovereignIdentity;
+        accessGovernor = _accessGovernor;
+        auditTrail = _auditTrail;
+        oracleProviders[msg.sender] = true;
     }
-
-    // ============ Device Management ============
     
-    /**
-     * @dev Register a new device with SofieOS
-     */
-    function registerDevice(
-        bytes32 deviceHash,
-        bytes32 deviceType,
-        bytes32 publicKeyHash,
-        bytes32 firmwareHash
-    ) external {
-        require(devices[deviceHash].registeredAt == 0, "SofieOSAdapter: Device exists");
+    // ============ Admin Functions ============
+    
+    function addOracleProvider(address provider) external {
         require(
-            identity.getProfile(msg.sender).status == SovereignIdentity.IdentityStatus.Active,
-            "SofieOSAdapter: Owner not active"
-        );
-
-        devices[deviceHash] = Device({
-            deviceHash: deviceHash,
-            owner: msg.sender,
-            deviceType: deviceType,
-            publicKeyHash: publicKeyHash,
-            registeredAt: block.timestamp,
-            lastHeartbeat: block.timestamp,
-            active: true,
-            firmwareHash: firmwareHash,
-            configHash: bytes32(0)
-        });
-
-        ownerDevices[msg.sender].push(deviceHash);
-
-        // Link identity to SofieOS
-        if (identity.getSystemIdentity(msg.sender, SovereignIdentity.SystemType.SofieOS).systemId == bytes32(0)) {
-            identity.linkSystem(msg.sender, SovereignIdentity.SystemType.SofieOS, deviceHash);
-        }
-
-        auditTrail.createEntry(
-            msg.sender,
-            SovereignIdentity.SystemType.SofieOS,
-            keccak256("DEVICE_REGISTERED"),
-            deviceHash,
-            new bytes32[](0)
-        );
-
-        emit DeviceRegistered(deviceHash, msg.sender, deviceType);
-    }
-
-    /**
-     * @dev Device heartbeat - proves device is active
-     */
-    function heartbeat(bytes32 deviceHash, bytes32 statusHash) external onlyAuthorizedOSNode {
-        require(devices[deviceHash].active, "SofieOSAdapter: Device inactive");
-        devices[deviceHash].lastHeartbeat = block.timestamp;
-
-        emit DeviceHeartbeat(deviceHash, block.timestamp);
-    }
-
-    /**
-     * @dev Deactivate device
-     */
-    function deactivateDevice(bytes32 deviceHash, bytes32 reasonHash) external {
-        require(
-            devices[deviceHash].owner == msg.sender || msg.sender == governance,
+            msg.sender == accessGovernor || msg.sender == sovereignIdentity,
             "SofieOSAdapter: Not authorized"
+        );
+        oracleProviders[provider] = true;
+    }
+    
+    function removeOracleProvider(address provider) external {
+        require(
+            msg.sender == accessGovernor || msg.sender == sovereignIdentity,
+            "SofieOSAdapter: Not authorized"
+        );
+        oracleProviders[provider] = false;
+    }
+    
+    // ============ ISofieOracle Implementation ============
+    
+    function registerDataFeed(
+        bytes32 _feedId,
+        DataType _dataType,
+        uint256 _updateInterval
+    ) external override onlyOracleProvider returns (bool) {
+        require(_feedId != bytes32(0), "SofieOSAdapter: Invalid feed ID");
+        require(dataFeeds[_feedId].feedId == bytes32(0), "SofieOSAdapter: Feed exists");
+        
+        DataFeed memory feed = DataFeed({
+            feedId: _feedId,
+            dataType: _dataType,
+            oracleProvider: msg.sender,
+            updateInterval: _updateInterval,
+            lastUpdate: 0,
+            latestDataHash: bytes32(0),
+            isActive: true
+        });
+        
+        dataFeeds[_feedId] = feed;
+        
+        emit DataFeedRegistered(_feedId, _dataType, msg.sender, _updateInterval);
+        
+        return true;
+    }
+    
+    function updateDataFeed(
+        bytes32 _feedId,
+        bytes32 _dataHash,
+        VerificationLevel _verification
+    ) external override onlyOracleProvider returns (bool) {
+        DataFeed storage feed = dataFeeds[_feedId];
+        require(feed.feedId != bytes32(0), "SofieOSAdapter: Feed not found");
+        require(feed.isActive, "SofieOSAdapter: Feed inactive");
+        require(
+            block.timestamp >= feed.lastUpdate + feed.updateInterval,
+            "SofieOSAdapter: Update too soon"
         );
         
-        devices[deviceHash].active = false;
-
-        auditTrail.createEntry(
-            devices[deviceHash].owner,
-            SovereignIdentity.SystemType.SofieOS,
-            keccak256("DEVICE_DEACTIVATED"),
-            reasonHash,
-            new bytes32[](1)
-        );
-
-        emit DeviceDeactivated(deviceHash, reasonHash);
+        feed.latestDataHash = _dataHash;
+        feed.lastUpdate = block.timestamp;
+        
+        emit DataFeedUpdated(_feedId, _dataHash, block.timestamp, _verification);
+        
+        return true;
     }
-
-    /**
-     * @dev Update device configuration
-     */
-    function updateConfig(bytes32 deviceHash, bytes32 configHash) external onlyDeviceOwner(deviceHash) {
-        devices[deviceHash].configHash = configHash;
-    }
-
-    /**
-     * @dev Update firmware hash after OTA update
-     */
-    function updateFirmware(bytes32 deviceHash, bytes32 firmwareHash) external onlyDeviceOwner(deviceHash) {
-        devices[deviceHash].firmwareHash = firmwareHash;
-    }
-
-    // ============ Permission Caching ============
     
-    /**
-     * @dev Cache access permissions for offline/device use
-     */
-    function cachePermissions(
-        address patient,
-        bytes32 permissionHash,
-        uint256 validitySeconds
-    ) external onlyAuthorizedOSNode {
-        permissionCaches[patient] = PermissionCache({
-            permissionHash: permissionHash,
-            cachedAt: block.timestamp,
-            expiresAt: block.timestamp + validitySeconds,
-            valid: true
-        });
-
-        emit PermissionCached(patient, permissionHash, block.timestamp + validitySeconds);
-    }
-
-    /**
-     * @dev Invalidate cached permissions
-     */
-    function invalidateCache(address patient) external {
-        require(
-            msg.sender == patient || authorizedOSNodes[msg.sender] || msg.sender == governance,
-            "SofieOSAdapter: Not authorized"
-        );
-        permissionCaches[patient].valid = false;
-    }
-
-    // ============ OS Commands ============
-    
-    /**
-     * @dev Issue command to device via OS
-     */
-    function issueCommand(
-        bytes32 commandHash,
-        bytes32 targetDevice,
-        uint256 executeAfter
-    ) external {
-        require(
-            devices[targetDevice].owner == msg.sender || authorizedOSNodes[msg.sender],
-            "SofieOSAdapter: Not authorized"
-        );
-
-        commands[commandHash] = OSCommand({
-            commandHash: commandHash,
-            issuer: msg.sender,
-            targetDevice: targetDevice,
-            issuedAt: block.timestamp,
-            executeAfter: executeAfter,
-            executed: false,
+    function requestOracleData(
+        DataType _dataType,
+        bytes32 _queryHash,
+        uint256 _timeout
+    ) external override returns (bytes32 requestId) {
+        requestId = keccak256(abi.encodePacked(msg.sender, block.timestamp, requestNonce++));
+        
+        OracleRequest memory request = OracleRequest({
+            requestId: requestId,
+            requester: msg.sender,
+            dataType: _dataType,
+            queryHash: _queryHash,
+            requestedAt: block.timestamp,
+            timeout: _timeout,
+            isFulfilled: false,
             resultHash: bytes32(0)
         });
-
-        auditTrail.createEntry(
-            devices[targetDevice].owner,
-            SovereignIdentity.SystemType.SofieOS,
-            keccak256("OS_COMMAND_ISSUED"),
-            commandHash,
-            new bytes32[](0)
+        
+        requests[requestId] = request;
+        
+        emit OracleRequested(requestId, msg.sender, _dataType, _queryHash);
+        
+        return requestId;
+    }
+    
+    function fulfillOracleRequest(
+        bytes32 _requestId,
+        bytes32 _resultHash,
+        VerificationLevel _verification
+    ) external override onlyOracleProvider returns (bool) {
+        OracleRequest storage request = requests[_requestId];
+        require(request.requestId != bytes32(0), "SofieOSAdapter: Request not found");
+        require(!request.isFulfilled, "SofieOSAdapter: Already fulfilled");
+        require(
+            block.timestamp <= request.requestedAt + request.timeout,
+            "SofieOSAdapter: Request timed out"
         );
-
-        emit OSCommandIssued(commandHash, targetDevice, executeAfter);
+        
+        request.resultHash = _resultHash;
+        request.isFulfilled = true;
+        
+        emit OracleFulfilled(_requestId, _resultHash, _verification);
+        
+        return true;
     }
-
-    /**
-     * @dev Execute pending command
-     */
-    function executeCommand(bytes32 commandHash, bytes32 resultHash) external onlyAuthorizedOSNode {
-        OSCommand storage cmd = commands[commandHash];
-        require(!cmd.executed, "SofieOSAdapter: Already executed");
-        require(block.timestamp >= cmd.executeAfter, "SofieOSAdapter: Too early");
-
-        cmd.executed = true;
-        cmd.resultHash = resultHash;
-
-        emit OSCommandExecuted(commandHash, resultHash);
-    }
-
-    // ============ OS Node Management ============
     
-    function authorizeOSNode(address node) external onlyGovernance {
-        authorizedOSNodes[node] = true;
+    function getLatestData(
+        bytes32 _feedId
+    ) external view override returns (bytes32 dataHash, uint256 timestamp, VerificationLevel verification) {
+        DataFeed storage feed = dataFeeds[_feedId];
+        return (feed.latestDataHash, feed.lastUpdate, VerificationLevel.Signed);
     }
-
-    function revokeOSNode(address node) external onlyGovernance {
-        authorizedOSNodes[node] = false;
-    }
-
-    function setHeartbeatTimeout(uint256 timeout) external onlyGovernance {
-        heartbeatTimeout = timeout;
-    }
-
-    // ============ View Functions ============
     
-    function getDevice(bytes32 deviceHash) external view returns (Device memory) {
-        return devices[deviceHash];
+    function isFeedActive(bytes32 _feedId) external view override returns (bool) {
+        return dataFeeds[_feedId].isActive;
     }
-
-    function getOwnerDevices(address owner) external view returns (bytes32[] memory) {
-        return ownerDevices[owner];
+    
+    function getRequestStatus(
+        bytes32 _requestId
+    ) external view override returns (bool isFulfilled, bytes32 resultHash) {
+        OracleRequest storage request = requests[_requestId];
+        return (request.isFulfilled, request.resultHash);
     }
-
-    function isDeviceActive(bytes32 deviceHash) external view returns (bool) {
-        Device memory device = devices[deviceHash];
-        return device.active && (block.timestamp - device.lastHeartbeat) <= heartbeatTimeout;
+    
+    // ============ Additional Functions ============
+    
+    function deactivateFeed(bytes32 _feedId) external {
+        require(
+            msg.sender == accessGovernor || 
+            msg.sender == sovereignIdentity ||
+            msg.sender == dataFeeds[_feedId].oracleProvider,
+            "SofieOSAdapter: Not authorized"
+        );
+        dataFeeds[_feedId].isActive = false;
     }
-
-    function getPermissionCache(address patient) external view returns (PermissionCache memory) {
-        return permissionCaches[patient];
+    
+    function getFeedDetails(bytes32 _feedId) external view returns (DataFeed memory) {
+        return dataFeeds[_feedId];
     }
-
-    function getCommand(bytes32 commandHash) external view returns (OSCommand memory) {
-        return commands[commandHash];
+    
+    function getRequestDetails(bytes32 _requestId) external view returns (OracleRequest memory) {
+        return requests[_requestId];
     }
 }

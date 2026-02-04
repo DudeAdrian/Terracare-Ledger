@@ -1,352 +1,255 @@
 // SPDX-License-Identifier: MIT
-// Pillar-1: AI audit trail with model versioning
-// Pillar-2: First Principles: AI cannot hallucinate without traceability
-// Pillar-3: Genius Channeled - Florence Nightingale (precision in data)
-// Pillar-4: AI accountability as strategic dominance
-// Pillar-5: Confidence scoring for AI outputs
-// Pillar-6: Linked AI recommendations (Zettelkasten)
-// Pillar-7: Build for AI regulatory compliance
-
-pragma solidity ^0.8.24;
-
-import "../SovereignIdentity.sol";
-import "../AccessGovernor.sol";
-import "../AuditTrail.sol";
-
 /**
  * @title LlamaAdapter
- * @dev AI inference module adapter for Terracare
- *      - Model versioning on-chain
- *      - Recommendation audit trails
- *      - Confidence scoring with accountability
- *      - Input/output hash anchoring
+ * @notice Bridge for AI inference audit trails
+ * @dev Records AI model inferences and recommendations for accountability
  */
+pragma solidity ^0.8.24;
+
 contract LlamaAdapter {
-    // ============ Structs ============
+    
+    // ============ Types ============
+    
+    enum InferenceType {
+        Diagnostic,
+        Recommendation,
+        Analysis,
+        Prediction,
+        Summarization,
+        ChatResponse
+    }
+    
+    enum ConfidenceLevel {
+        Low,        // < 70%
+        Medium,     // 70-85%
+        High,       // 85-95%
+        VeryHigh    // > 95%
+    }
+    
+    struct InferenceRecord {
+        bytes32 inferenceHash;      // Hash of inference data
+        bytes32 modelHash;          // AI model version hash
+        bytes32 inputHash;          // Hash of input/prompt
+        bytes32 outputHash;         // Hash of output/response
+        InferenceType inferenceType;
+        ConfidenceLevel confidence;
+        address operator;           // Who triggered the inference
+        uint256 timestamp;
+        bool hasHumanReview;        // Was this reviewed by human
+        bytes32 reviewerHash;       // Reviewer identity hash (if reviewed)
+    }
     
     struct ModelVersion {
-        bytes32 modelHash;          // Hash of model weights/config
-        bytes32 trainingDataHash;   // Training dataset hash
-        uint256 version;
-        uint256 deployedAt;
-        address deployedBy;
-        bool active;
-        bytes32 validationResults;  // Validation metrics hash
-    }
-
-    struct AIRecommendation {
-        bytes32 recommendationHash;
-        bytes32 inputHash;          // Hash of input data (never raw data)
-        bytes32 outputHash;         // Hash of AI output
-        bytes32 modelHash;          // Model used
-        uint256 confidenceScore;    // 0-10000 (0-100% with 2 decimals)
-        uint256 createdAt;
-        address patient;
-        bytes32 contextHash;        // Context/prompt hash
-        bytes32[] relatedRecommendations;
-    }
-
-    struct InferenceSession {
-        bytes32 sessionHash;
-        address patient;
         bytes32 modelHash;
-        uint256 startedAt;
-        uint256 completedAt;
-        uint256 recommendationCount;
-        bytes32 sessionSummaryHash;
+        string modelName;
+        uint256 version;
+        bytes32 trainingDataHash;   // Hash of training dataset manifest
+        uint256 trainedAt;
+        bool isApproved;
     }
-
-    // ============ State ============
     
-    SovereignIdentity public identity;
-    AccessGovernor public accessGovernor;
-    AuditTrail public auditTrail;
+    // ============ Storage ============
     
-    address public governance;
+    address public sovereignIdentity;
+    address public accessGovernor;
+    address public auditTrail;
     
-    // Model hash => ModelVersion
+    // Inference hash => record
+    mapping(bytes32 => InferenceRecord) public inferences;
+    
+    // User identity => inference hashes
+    mapping(bytes32 => bytes32[]) public userInferences;
+    
+    // Model hash => model info
     mapping(bytes32 => ModelVersion) public models;
-    bytes32[] public modelList;
-    bytes32 public activeModel;
-    
-    // Recommendation hash => AIRecommendation
-    mapping(bytes32 => AIRecommendation) public recommendations;
-    mapping(address => bytes32[]) public patientRecommendations;
-    
-    // Session hash => InferenceSession
-    mapping(bytes32 => InferenceSession) public sessions;
     
     // Authorized AI operators
     mapping(address => bool) public authorizedOperators;
     
-    // Minimum confidence threshold
-    uint256 public minConfidenceThreshold = 5000; // 50%
-
+    // Approved model hashes
+    bytes32[] public approvedModels;
+    
     // ============ Events ============
+    
+    event InferenceRecorded(
+        bytes32 indexed inferenceHash,
+        bytes32 indexed modelHash,
+        InferenceType inferenceType,
+        ConfidenceLevel confidence,
+        address operator,
+        uint256 timestamp
+    );
     
     event ModelRegistered(
         bytes32 indexed modelHash,
+        string modelName,
         uint256 version,
-        address deployedBy
+        uint256 trainedAt
     );
     
-    event ModelActivated(bytes32 indexed modelHash);
+    event ModelApproved(bytes32 indexed modelHash, address approver);
     
-    event RecommendationGenerated(
-        bytes32 indexed recommendationHash,
-        address indexed patient,
-        bytes32 modelHash,
-        uint256 confidenceScore
+    event InferenceReviewed(
+        bytes32 indexed inferenceHash,
+        bytes32 indexed reviewerHash,
+        bool approved,
+        uint256 timestamp
     );
     
-    event InferenceSessionStarted(
-        bytes32 indexed sessionHash,
-        address indexed patient,
-        bytes32 modelHash
-    );
-    
-    event InferenceSessionCompleted(
-        bytes32 indexed sessionHash,
-        uint256 recommendationCount
-    );
-
     // ============ Modifiers ============
     
-    modifier onlyGovernance() {
-        require(msg.sender == governance, "LlamaAdapter: Not governance");
-        _;
-    }
-
     modifier onlyAuthorizedOperator() {
-        require(
-            authorizedOperators[msg.sender] || msg.sender == governance,
-            "LlamaAdapter: Not authorized"
-        );
+        require(authorizedOperators[msg.sender], "LlamaAdapter: Not authorized");
         _;
     }
-
+    
     // ============ Constructor ============
     
     constructor(
-        address _identity,
+        address _sovereignIdentity,
         address _accessGovernor,
         address _auditTrail
     ) {
-        identity = SovereignIdentity(_identity);
-        accessGovernor = AccessGovernor(_accessGovernor);
-        auditTrail = AuditTrail(_auditTrail);
-        governance = msg.sender;
+        sovereignIdentity = _sovereignIdentity;
+        accessGovernor = _accessGovernor;
+        auditTrail = _auditTrail;
+        authorizedOperators[msg.sender] = true;
     }
-
-    // ============ Model Management ============
     
-    /**
-     * @dev Register new AI model version
-     */
-    function registerModel(
-        bytes32 modelHash,
-        bytes32 trainingDataHash,
-        uint256 version,
-        bytes32 validationResults
-    ) external onlyGovernance {
-        require(models[modelHash].deployedAt == 0, "LlamaAdapter: Model exists");
-
-        models[modelHash] = ModelVersion({
-            modelHash: modelHash,
-            trainingDataHash: trainingDataHash,
-            version: version,
-            deployedAt: block.timestamp,
-            deployedBy: msg.sender,
-            active: false,
-            validationResults: validationResults
-        });
-
-        modelList.push(modelHash);
-
-        auditTrail.createEntry(
-            address(0),
-            SovereignIdentity.SystemType.LlamaBackend,
-            keccak256("MODEL_REGISTERED"),
-            modelHash,
-            new bytes32[](0)
-        );
-
-        emit ModelRegistered(modelHash, version, msg.sender);
-    }
-
-    /**
-     * @dev Activate model for inference
-     */
-    function activateModel(bytes32 modelHash) external onlyGovernance {
-        require(models[modelHash].deployedAt != 0, "LlamaAdapter: Model not found");
-        
-        // Deactivate current
-        if (activeModel != bytes32(0)) {
-            models[activeModel].active = false;
-        }
-
-        models[modelHash].active = true;
-        activeModel = modelHash;
-
-        auditTrail.createEntry(
-            address(0),
-            SovereignIdentity.SystemType.LlamaBackend,
-            keccak256("MODEL_ACTIVATED"),
-            modelHash,
-            new bytes32[](0)
-        );
-
-        emit ModelActivated(modelHash);
-    }
-
-    // ============ Inference Sessions ============
+    // ============ Admin Functions ============
     
-    /**
-     * @dev Start inference session
-     */
-    function startSession(
-        bytes32 sessionHash,
-        address patient
-    ) external onlyAuthorizedOperator {
+    function addOperator(address operator) external {
         require(
-            identity.getProfile(patient).status == SovereignIdentity.IdentityStatus.Active,
-            "LlamaAdapter: Patient not active"
+            msg.sender == accessGovernor || msg.sender == sovereignIdentity,
+            "LlamaAdapter: Not authorized"
         );
-        require(activeModel != bytes32(0), "LlamaAdapter: No active model");
-        require(sessions[sessionHash].startedAt == 0, "LlamaAdapter: Session exists");
-
-        sessions[sessionHash] = InferenceSession({
-            sessionHash: sessionHash,
-            patient: patient,
-            modelHash: activeModel,
-            startedAt: block.timestamp,
-            completedAt: 0,
-            recommendationCount: 0,
-            sessionSummaryHash: bytes32(0)
-        });
-
-        // Link identity
-        if (identity.getSystemIdentity(patient, SovereignIdentity.SystemType.LlamaBackend).systemId == bytes32(0)) {
-            identity.linkSystem(patient, SovereignIdentity.SystemType.LlamaBackend, sessionHash);
-        }
-
-        auditTrail.createEntry(
-            patient,
-            SovereignIdentity.SystemType.LlamaBackend,
-            keccak256("INFERENCE_SESSION_STARTED"),
-            sessionHash,
-            new bytes32[](0)
-        );
-
-        emit InferenceSessionStarted(sessionHash, patient, activeModel);
-    }
-
-    /**
-     * @dev Record AI recommendation - every output anchored
-     * Pillar-2: AI cannot hallucinate without traceability
-     */
-    function recordRecommendation(
-        bytes32 recommendationHash,
-        bytes32 sessionHash,
-        address patient,
-        bytes32 inputHash,
-        bytes32 outputHash,
-        uint256 confidenceScore,
-        bytes32 contextHash,
-        bytes32[] calldata relatedRecommendations
-    ) external onlyAuthorizedOperator {
-        require(sessions[sessionHash].startedAt != 0, "LlamaAdapter: Session not found");
-        require(recommendations[recommendationHash].createdAt == 0, "LlamaAdapter: Recommendation exists");
-        require(confidenceScore >= minConfidenceThreshold, "LlamaAdapter: Below threshold");
-
-        recommendations[recommendationHash] = AIRecommendation({
-            recommendationHash: recommendationHash,
-            inputHash: inputHash,
-            outputHash: outputHash,
-            modelHash: activeModel,
-            confidenceScore: confidenceScore,
-            createdAt: block.timestamp,
-            patient: patient,
-            contextHash: contextHash,
-            relatedRecommendations: relatedRecommendations
-        });
-
-        patientRecommendations[patient].push(recommendationHash);
-        sessions[sessionHash].recommendationCount++;
-
-        auditTrail.createEntry(
-            patient,
-            SovereignIdentity.SystemType.LlamaBackend,
-            keccak256("RECOMMENDATION_GENERATED"),
-            recommendationHash,
-            relatedRecommendations
-        );
-
-        emit RecommendationGenerated(recommendationHash, patient, activeModel, confidenceScore);
-    }
-
-    /**
-     * @dev Complete inference session
-     */
-    function completeSession(
-        bytes32 sessionHash,
-        bytes32 sessionSummaryHash
-    ) external onlyAuthorizedOperator {
-        InferenceSession storage session = sessions[sessionHash];
-        require(session.startedAt != 0, "LlamaAdapter: Session not found");
-        require(session.completedAt == 0, "LlamaAdapter: Already completed");
-
-        session.completedAt = block.timestamp;
-        session.sessionSummaryHash = sessionSummaryHash;
-
-        auditTrail.createEntry(
-            session.patient,
-            SovereignIdentity.SystemType.LlamaBackend,
-            keccak256("INFERENCE_SESSION_COMPLETED"),
-            sessionHash,
-            new bytes32[](0)
-        );
-
-        emit InferenceSessionCompleted(sessionHash, session.recommendationCount);
-    }
-
-    // ============ Operator Management ============
-    
-    function authorizeOperator(address operator) external onlyGovernance {
         authorizedOperators[operator] = true;
     }
-
-    function revokeOperator(address operator) external onlyGovernance {
+    
+    function removeOperator(address operator) external {
+        require(
+            msg.sender == accessGovernor || msg.sender == sovereignIdentity,
+            "LlamaAdapter: Not authorized"
+        );
         authorizedOperators[operator] = false;
     }
-
-    function setMinConfidenceThreshold(uint256 threshold) external onlyGovernance {
-        minConfidenceThreshold = threshold;
+    
+    // ============ Model Management ============
+    
+    function registerModel(
+        bytes32 _modelHash,
+        string calldata _modelName,
+        uint256 _version,
+        bytes32 _trainingDataHash
+    ) external onlyAuthorizedOperator returns (bool) {
+        require(_modelHash != bytes32(0), "LlamaAdapter: Invalid model hash");
+        require(models[_modelHash].modelHash == bytes32(0), "LlamaAdapter: Model exists");
+        
+        ModelVersion memory model = ModelVersion({
+            modelHash: _modelHash,
+            modelName: _modelName,
+            version: _version,
+            trainingDataHash: _trainingDataHash,
+            trainedAt: block.timestamp,
+            isApproved: false
+        });
+        
+        models[_modelHash] = model;
+        
+        emit ModelRegistered(_modelHash, _modelName, _version, block.timestamp);
+        
+        return true;
     }
-
+    
+    function approveModel(bytes32 _modelHash) external {
+        require(
+            msg.sender == accessGovernor || msg.sender == sovereignIdentity,
+            "LlamaAdapter: Not authorized"
+        );
+        require(models[_modelHash].modelHash != bytes32(0), "LlamaAdapter: Model not found");
+        
+        models[_modelHash].isApproved = true;
+        approvedModels.push(_modelHash);
+        
+        emit ModelApproved(_modelHash, msg.sender);
+    }
+    
+    // ============ Inference Recording ============
+    
+    function recordInference(
+        bytes32 _inferenceHash,
+        bytes32 _modelHash,
+        bytes32 _inputHash,
+        bytes32 _outputHash,
+        InferenceType _inferenceType,
+        ConfidenceLevel _confidence,
+        bytes32 _userIdentity
+    ) external onlyAuthorizedOperator returns (bool) {
+        require(_inferenceHash != bytes32(0), "LlamaAdapter: Invalid inference hash");
+        require(inferences[_inferenceHash].inferenceHash == bytes32(0), "LlamaAdapter: Inference exists");
+        require(models[_modelHash].isApproved, "LlamaAdapter: Model not approved");
+        
+        InferenceRecord memory record = InferenceRecord({
+            inferenceHash: _inferenceHash,
+            modelHash: _modelHash,
+            inputHash: _inputHash,
+            outputHash: _outputHash,
+            inferenceType: _inferenceType,
+            confidence: _confidence,
+            operator: msg.sender,
+            timestamp: block.timestamp,
+            hasHumanReview: false,
+            reviewerHash: bytes32(0)
+        });
+        
+        inferences[_inferenceHash] = record;
+        userInferences[_userIdentity].push(_inferenceHash);
+        
+        emit InferenceRecorded(
+            _inferenceHash,
+            _modelHash,
+            _inferenceType,
+            _confidence,
+            msg.sender,
+            block.timestamp
+        );
+        
+        return true;
+    }
+    
+    function recordHumanReview(
+        bytes32 _inferenceHash,
+        bytes32 _reviewerHash,
+        bool _approved
+    ) external onlyAuthorizedOperator {
+        InferenceRecord storage record = inferences[_inferenceHash];
+        require(record.inferenceHash != bytes32(0), "LlamaAdapter: Inference not found");
+        
+        record.hasHumanReview = true;
+        record.reviewerHash = _reviewerHash;
+        
+        emit InferenceReviewed(_inferenceHash, _reviewerHash, _approved, block.timestamp);
+    }
+    
     // ============ View Functions ============
     
-    function getModel(bytes32 modelHash) external view returns (ModelVersion memory) {
-        return models[modelHash];
+    function getInference(bytes32 _inferenceHash) external view returns (InferenceRecord memory) {
+        return inferences[_inferenceHash];
     }
-
-    function getActiveModel() external view returns (ModelVersion memory) {
-        return models[activeModel];
+    
+    function getUserInferences(bytes32 _userIdentity) external view returns (bytes32[] memory) {
+        return userInferences[_userIdentity];
     }
-
-    function getRecommendation(bytes32 recommendationHash) external view returns (AIRecommendation memory) {
-        return recommendations[recommendationHash];
+    
+    function getModel(bytes32 _modelHash) external view returns (ModelVersion memory) {
+        return models[_modelHash];
     }
-
-    function getPatientRecommendations(address patient) external view returns (bytes32[] memory) {
-        return patientRecommendations[patient];
+    
+    function getApprovedModels() external view returns (bytes32[] memory) {
+        return approvedModels;
     }
-
-    function getSession(bytes32 sessionHash) external view returns (InferenceSession memory) {
-        return sessions[sessionHash];
-    }
-
-    function getModelCount() external view returns (uint256) {
-        return modelList.length;
+    
+    function isModelApproved(bytes32 _modelHash) external view returns (bool) {
+        return models[_modelHash].isApproved;
     }
 }

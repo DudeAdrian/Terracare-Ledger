@@ -1,490 +1,296 @@
 // SPDX-License-Identifier: MIT
-// Pillar-1: Geo-fenced access rights using location hashes
-// Pillar-2: First Principles: Location is a permission vector
-// Pillar-3: Genius Channeled - Buckminster Fuller (geodesic spheres)
-// Pillar-4: Geographic sovereignty as strategic moat
-// Pillar-5: Location-based consent management
-// Pillar-6: OODA loops for geo-fence decisions
-// Pillar-7: Build for location privacy
-
-pragma solidity ^0.8.24;
-
-import "../SovereignIdentity.sol";
-import "../AccessGovernor.sol";
-import "../AuditTrail.sol";
-
 /**
  * @title MapAdapter
- * @dev Geographic/location layer adapter for Terracare
- *      - Geo-fenced access rights
- *      - Location-based consent management
- *      - Provider access valid only in specific radius
- *      - Regional data sovereignty compliance
+ * @notice Bridge for geographic sovereignty and geo-fencing
+ * @dev Manages location-based access and territorial boundaries
  */
+pragma solidity ^0.8.24;
+
 contract MapAdapter {
-    // ============ Structs ============
     
-    struct GeoFence {
-        bytes32 fenceId;
+    // ============ Types ============
+    
+    enum ZoneType {
+        Private,        // Personal space
+        Clinical,       // Healthcare facility
+        Research,       // Research zone
+        Sacred,         // Protected spiritual site
+        Restricted      // No-access zone
+    }
+    
+    enum GeoAction {
+        Enter,
+        Exit,
+        Remain
+    }
+    
+    // Geohash precision levels (character count)
+    // 6 chars = ~1.2km, 7 = ~150m, 8 = ~20m, 9 = ~2.4m
+    struct GeoZone {
+        bytes32 zoneId;
+        string geohashPrefix;   // Geohash prefix for zone
+        uint8 precision;        // Number of characters
+        ZoneType zoneType;
         address owner;
-        int256 centerLat;           // Latitude * 1e6 (microdegrees)
-        int256 centerLng;           // Longitude * 1e6 (microdegrees)
-        uint256 radiusMeters;       // Radius in meters
+        bool isActive;
         uint256 createdAt;
-        uint256 expiresAt;
-        bool active;
-        bytes32 purposeHash;        // Purpose of geo-fence
+        // Boundary hashes (for complex shapes)
+        bytes32 boundaryHash;   // Hash of full boundary data
     }
-
-    struct LocationConsent {
-        address patient;
-        address grantee;
-        bytes32 fenceId;
-        uint256 grantedAt;
-        uint256 expiresAt;
-        bool active;
-        bytes32 consentTermsHash;   // Terms of location-based access
-    }
-
-    struct LocationAttestation {
-        bytes32 attestationHash;
-        address subject;
-        int256 lat;                 // Latitude * 1e6
-        int256 lng;                 // Longitude * 1e6
+    
+    struct GeoEvent {
+        bytes32 eventId;
+        bytes32 zoneId;
+        bytes32 identityHash;
+        GeoAction action;
+        bytes32 locationHash;   // Precise location hash
         uint256 timestamp;
-        uint256 accuracyMeters;
-        bytes32 deviceHash;
-        address attestor;
+        bytes32 deviceHash;     // Device that recorded
     }
-
-    struct RegionalRule {
-        bytes32 regionHash;         // Hash of region identifier
-        bool dataResidencyRequired; // Data must stay in region
-        bytes32 allowedDataCenters; // Hash of allowed DC list
-        bool active;
+    
+    struct AccessRule {
+        bytes32 zoneId;
+        bytes32 identityHash;
+        bool isAllowed;
+        uint256 expiresAt;
+        bytes32 ruleHash;       // Terms of access
     }
-
-    // ============ State ============
     
-    SovereignIdentity public identity;
-    AccessGovernor public accessGovernor;
-    AuditTrail public auditTrail;
+    // ============ Storage ============
     
-    address public governance;
+    address public sovereignIdentity;
+    address public accessGovernor;
+    address public auditTrail;
     
-    // Fence ID => GeoFence
-    mapping(bytes32 => GeoFence) public geoFences;
-    mapping(address => bytes32[]) public ownerFences;
+    // Zone ID => zone data
+    mapping(bytes32 => GeoZone) public zones;
     
-    // Consent ID => LocationConsent (consent ID = hash of patient + grantee + fence)
-    mapping(bytes32 => LocationConsent) public locationConsents;
-    mapping(address => bytes32[]) public patientLocationConsents;
+    // Event ID => event data
+    mapping(bytes32 => GeoEvent) public geoEvents;
     
-    // Attestation hash => LocationAttestation
-    mapping(bytes32 => LocationAttestation) public attestations;
+    // Identity => current zone
+    mapping(bytes32 => bytes32) public currentZone;
     
-    // Region hash => RegionalRule
-    mapping(bytes32 => RegionalRule) public regionalRules;
+    // Access rules: zone => identity => rule
+    mapping(bytes32 => mapping(bytes32 => AccessRule)) public accessRules;
     
-    // Authorized location oracles
-    mapping(address => bool) public locationOracles;
+    // Identity => event IDs (history)
+    mapping(bytes32 => bytes32[]) public identityGeoHistory;
     
-    // Earth's radius in meters for distance calculations
-    uint256 private constant EARTH_RADIUS = 6371000;
-
+    // Authorized zone managers
+    mapping(address => bool) public zoneManagers;
+    
     // ============ Events ============
     
-    event GeoFenceCreated(
-        bytes32 indexed fenceId,
-        address indexed owner,
-        int256 lat,
-        int256 lng,
-        uint256 radius
+    event ZoneCreated(
+        bytes32 indexed zoneId,
+        string geohashPrefix,
+        ZoneType zoneType,
+        address owner,
+        uint256 timestamp
     );
     
-    event LocationConsentGranted(
-        bytes32 indexed consentId,
-        address indexed patient,
-        address indexed grantee,
-        bytes32 fenceId
+    event GeoEventRecorded(
+        bytes32 indexed eventId,
+        bytes32 indexed zoneId,
+        bytes32 indexed identityHash,
+        GeoAction action,
+        uint256 timestamp
     );
     
-    event LocationAttested(
-        bytes32 indexed attestationHash,
-        address indexed subject,
-        int256 lat,
-        int256 lng
+    event AccessRuleSet(
+        bytes32 indexed zoneId,
+        bytes32 indexed identityHash,
+        bool isAllowed,
+        uint256 expiresAt
     );
     
-    event RegionalRuleSet(
-        bytes32 indexed regionHash,
-        bool dataResidencyRequired
-    );
-
+    event ZoneDeactivated(bytes32 indexed zoneId, uint256 timestamp);
+    
     // ============ Modifiers ============
     
-    modifier onlyGovernance() {
-        require(msg.sender == governance, "MapAdapter: Not governance");
+    modifier onlyZoneManager() {
+        require(zoneManagers[msg.sender], "MapAdapter: Not zone manager");
         _;
     }
-
-    modifier onlyLocationOracle() {
-        require(
-            locationOracles[msg.sender] || msg.sender == governance,
-            "MapAdapter: Not location oracle"
-        );
-        _;
-    }
-
+    
     // ============ Constructor ============
     
     constructor(
-        address _identity,
+        address _sovereignIdentity,
         address _accessGovernor,
         address _auditTrail
     ) {
-        identity = SovereignIdentity(_identity);
-        accessGovernor = AccessGovernor(_accessGovernor);
-        auditTrail = AuditTrail(_auditTrail);
-        governance = msg.sender;
+        sovereignIdentity = _sovereignIdentity;
+        accessGovernor = _accessGovernor;
+        auditTrail = _auditTrail;
+        zoneManagers[msg.sender] = true;
     }
-
-    // ============ Geo-Fence Management ============
     
-    /**
-     * @dev Create geo-fenced area
-     */
-    function createGeoFence(
-        bytes32 fenceId,
-        int256 centerLat,
-        int256 centerLng,
-        uint256 radiusMeters,
-        uint256 validityDays,
-        bytes32 purposeHash
-    ) external {
-        require(geoFences[fenceId].createdAt == 0, "MapAdapter: Fence exists");
-        require(
-            identity.getProfile(msg.sender).status == SovereignIdentity.IdentityStatus.Active,
-            "MapAdapter: Not active"
-        );
-
-        geoFences[fenceId] = GeoFence({
-            fenceId: fenceId,
-            owner: msg.sender,
-            centerLat: centerLat,
-            centerLng: centerLng,
-            radiusMeters: radiusMeters,
-            createdAt: block.timestamp,
-            expiresAt: block.timestamp + (validityDays * 1 days),
-            active: true,
-            purposeHash: purposeHash
-        });
-
-        ownerFences[msg.sender].push(fenceId);
-
-        // Link identity
-        if (identity.getSystemIdentity(msg.sender, SovereignIdentity.SystemType.MapSystem).systemId == bytes32(0)) {
-            identity.linkSystem(msg.sender, SovereignIdentity.SystemType.MapSystem, fenceId);
-        }
-
-        auditTrail.createEntry(
-            msg.sender,
-            SovereignIdentity.SystemType.MapSystem,
-            keccak256("GEOFENCE_CREATED"),
-            fenceId,
-            new bytes32[](0)
-        );
-
-        emit GeoFenceCreated(fenceId, msg.sender, centerLat, centerLng, radiusMeters);
-    }
-
-    /**
-     * @dev Deactivate geo-fence
-     */
-    function deactivateGeoFence(bytes32 fenceId) external {
-        require(
-            geoFences[fenceId].owner == msg.sender || msg.sender == governance,
-            "MapAdapter: Not owner"
-        );
-        geoFences[fenceId].active = false;
-    }
-
-    // ============ Location Consent ============
+    // ============ Admin Functions ============
     
-    /**
-     * @dev Grant location-based consent
-     * Provider access valid only in specific geo-fence
-     */
-    function grantLocationConsent(
-        address grantee,
-        bytes32 fenceId,
-        uint256 validityDays,
-        bytes32 consentTermsHash
-    ) external {
-        require(geoFences[fenceId].active, "MapAdapter: Fence not active");
+    function addZoneManager(address manager) external {
         require(
-            identity.getProfile(msg.sender).status == SovereignIdentity.IdentityStatus.Active,
-            "MapAdapter: Not active"
-        );
-
-        bytes32 consentId = keccak256(abi.encodePacked(msg.sender, grantee, fenceId));
-
-        locationConsents[consentId] = LocationConsent({
-            patient: msg.sender,
-            grantee: grantee,
-            fenceId: fenceId,
-            grantedAt: block.timestamp,
-            expiresAt: block.timestamp + (validityDays * 1 days),
-            active: true,
-            consentTermsHash: consentTermsHash
-        });
-
-        patientLocationConsents[msg.sender].push(consentId);
-
-        auditTrail.createEntry(
-            msg.sender,
-            SovereignIdentity.SystemType.MapSystem,
-            keccak256("LOCATION_CONSENT_GRANTED"),
-            consentId,
-            new bytes32[](0)
-        );
-
-        emit LocationConsentGranted(consentId, msg.sender, grantee, fenceId);
-    }
-
-    /**
-     * @dev Revoke location consent
-     */
-    function revokeLocationConsent(bytes32 consentId) external {
-        LocationConsent storage consent = locationConsents[consentId];
-        require(
-            consent.patient == msg.sender || msg.sender == governance,
+            msg.sender == accessGovernor || msg.sender == sovereignIdentity,
             "MapAdapter: Not authorized"
         );
-        consent.active = false;
+        zoneManagers[manager] = true;
     }
-
-    // ============ Location Attestation ============
     
-    /**
-     * @dev Attest location - called by authorized oracle
-     */
-    function attestLocation(
-        bytes32 attestationHash,
-        address subject,
-        int256 lat,
-        int256 lng,
-        uint256 accuracyMeters,
-        bytes32 deviceHash
-    ) external onlyLocationOracle {
-        attestations[attestationHash] = LocationAttestation({
-            attestationHash: attestationHash,
-            subject: subject,
-            lat: lat,
-            lng: lng,
-            timestamp: block.timestamp,
-            accuracyMeters: accuracyMeters,
-            deviceHash: deviceHash,
-            attestor: msg.sender
-        });
-
-        auditTrail.createEntry(
-            subject,
-            SovereignIdentity.SystemType.MapSystem,
-            keccak256("LOCATION_ATTESTED"),
-            attestationHash,
-            new bytes32[](0)
+    function removeZoneManager(address manager) external {
+        require(
+            msg.sender == accessGovernor || msg.sender == sovereignIdentity,
+            "MapAdapter: Not authorized"
         );
-
-        emit LocationAttested(attestationHash, subject, lat, lng);
+        zoneManagers[manager] = false;
     }
-
-    // ============ Regional Rules ============
     
-    /**
-     * @dev Set regional data sovereignty rules
-     */
-    function setRegionalRule(
-        bytes32 regionHash,
-        bool dataResidencyRequired,
-        bytes32 allowedDataCenters
-    ) external onlyGovernance {
-        regionalRules[regionHash] = RegionalRule({
-            regionHash: regionHash,
-            dataResidencyRequired: dataResidencyRequired,
-            allowedDataCenters: allowedDataCenters,
-            active: true
+    // ============ Zone Management ============
+    
+    function createZone(
+        bytes32 _zoneId,
+        string calldata _geohashPrefix,
+        uint8 _precision,
+        ZoneType _zoneType,
+        bytes32 _boundaryHash
+    ) external onlyZoneManager returns (bool) {
+        require(_zoneId != bytes32(0), "MapAdapter: Invalid zone ID");
+        require(zones[_zoneId].zoneId == bytes32(0), "MapAdapter: Zone exists");
+        require(_precision >= 4 && _precision <= 12, "MapAdapter: Invalid precision");
+        
+        GeoZone memory zone = GeoZone({
+            zoneId: _zoneId,
+            geohashPrefix: _geohashPrefix,
+            precision: _precision,
+            zoneType: _zoneType,
+            owner: msg.sender,
+            isActive: true,
+            createdAt: block.timestamp,
+            boundaryHash: _boundaryHash
         });
-
-        auditTrail.createEntry(
-            address(0),
-            SovereignIdentity.SystemType.MapSystem,
-            keccak256("REGIONAL_RULE_SET"),
-            regionHash,
-            new bytes32[](0)
-        );
-
-        emit RegionalRuleSet(regionHash, dataResidencyRequired);
+        
+        zones[_zoneId] = zone;
+        
+        emit ZoneCreated(_zoneId, _geohashPrefix, _zoneType, msg.sender, block.timestamp);
+        
+        return true;
     }
-
-    // ============ Verification ============
     
-    /**
-     * @dev Check if location is within geo-fence
-     */
-    function isWithinFence(
-        bytes32 fenceId,
-        int256 lat,
-        int256 lng
+    function deactivateZone(bytes32 _zoneId) external {
+        GeoZone storage zone = zones[_zoneId];
+        require(
+            zone.owner == msg.sender || 
+            msg.sender == accessGovernor ||
+            msg.sender == sovereignIdentity,
+            "MapAdapter: Not authorized"
+        );
+        zone.isActive = false;
+        
+        emit ZoneDeactivated(_zoneId, block.timestamp);
+    }
+    
+    // ============ Access Rules ============
+    
+    function setAccessRule(
+        bytes32 _zoneId,
+        bytes32 _identityHash,
+        bool _isAllowed,
+        uint256 _expiresAt,
+        bytes32 _ruleHash
+    ) external {
+        GeoZone storage zone = zones[_zoneId];
+        require(
+            zone.owner == msg.sender || 
+            msg.sender == accessGovernor,
+            "MapAdapter: Not authorized"
+        );
+        
+        AccessRule memory rule = AccessRule({
+            zoneId: _zoneId,
+            identityHash: _identityHash,
+            isAllowed: _isAllowed,
+            expiresAt: _expiresAt,
+            ruleHash: _ruleHash
+        });
+        
+        accessRules[_zoneId][_identityHash] = rule;
+        
+        emit AccessRuleSet(_zoneId, _identityHash, _isAllowed, _expiresAt);
+    }
+    
+    function checkAccess(
+        bytes32 _zoneId,
+        bytes32 _identityHash
     ) external view returns (bool) {
-        GeoFence memory fence = geoFences[fenceId];
-        if (!fence.active || fence.expiresAt < block.timestamp) return false;
-
-        uint256 distance = _calculateDistance(
-            fence.centerLat,
-            fence.centerLng,
-            lat,
-            lng
-        );
-
-        return distance <= fence.radiusMeters;
+        GeoZone storage zone = zones[_zoneId];
+        if (!zone.isActive) return false;
+        
+        AccessRule storage rule = accessRules[_zoneId][_identityHash];
+        if (rule.expiresAt != 0 && block.timestamp > rule.expiresAt) return false;
+        
+        return rule.isAllowed;
     }
-
-    /**
-     * @dev Verify location consent is valid for current location
-     */
-    function verifyLocationConsent(
-        bytes32 consentId,
-        bytes32 locationAttestation
-    ) external view returns (bool valid) {
-        LocationConsent memory consent = locationConsents[consentId];
-        if (!consent.active || consent.expiresAt < block.timestamp) return false;
-
-        LocationAttestation memory attestation = attestations[locationAttestation];
-        if (attestation.timestamp == 0) return false;
-        if (attestation.timestamp < block.timestamp - 1 hours) return false; // Stale
-
-        GeoFence memory fence = geoFences[consent.fenceId];
-        if (!fence.active) return false;
-
-        uint256 distance = _calculateDistance(
-            fence.centerLat,
-            fence.centerLng,
-            attestation.lat,
-            attestation.lng
-        );
-
-        return distance <= fence.radiusMeters;
-    }
-
-    // ============ Oracle Management ============
     
-    function authorizeOracle(address oracle) external onlyGovernance {
-        locationOracles[oracle] = true;
+    // ============ Geo Event Recording ============
+    
+    function recordGeoEvent(
+        bytes32 _eventId,
+        bytes32 _zoneId,
+        bytes32 _identityHash,
+        GeoAction _action,
+        bytes32 _locationHash,
+        bytes32 _deviceHash
+    ) external onlyZoneManager returns (bool) {
+        require(_eventId != bytes32(0), "MapAdapter: Invalid event ID");
+        require(zones[_zoneId].isActive, "MapAdapter: Zone not active");
+        require(geoEvents[_eventId].eventId == bytes32(0), "MapAdapter: Event exists");
+        
+        GeoEvent memory event_ = GeoEvent({
+            eventId: _eventId,
+            zoneId: _zoneId,
+            identityHash: _identityHash,
+            action: _action,
+            locationHash: _locationHash,
+            timestamp: block.timestamp,
+            deviceHash: _deviceHash
+        });
+        
+        geoEvents[_eventId] = event_;
+        identityGeoHistory[_identityHash].push(_eventId);
+        
+        if (_action == GeoAction.Enter) {
+            currentZone[_identityHash] = _zoneId;
+        } else if (_action == GeoAction.Exit) {
+            currentZone[_identityHash] = bytes32(0);
+        }
+        
+        emit GeoEventRecorded(_eventId, _zoneId, _identityHash, _action, block.timestamp);
+        
+        return true;
     }
-
-    function revokeOracle(address oracle) external onlyGovernance {
-        locationOracles[oracle] = false;
-    }
-
+    
     // ============ View Functions ============
     
-    function getGeoFence(bytes32 fenceId) external view returns (GeoFence memory) {
-        return geoFences[fenceId];
+    function getZone(bytes32 _zoneId) external view returns (GeoZone memory) {
+        return zones[_zoneId];
     }
-
-    function getLocationConsent(bytes32 consentId) external view returns (LocationConsent memory) {
-        return locationConsents[consentId];
-    }
-
-    function getAttestation(bytes32 attestationHash) external view returns (LocationAttestation memory) {
-        return attestations[attestationHash];
-    }
-
-    function getRegionalRule(bytes32 regionHash) external view returns (RegionalRule memory) {
-        return regionalRules[regionHash];
-    }
-
-    function getPatientConsents(address patient) external view returns (bytes32[] memory) {
-        return patientLocationConsents[patient];
-    }
-
-    // ============ Distance Calculation ============
     
-    /**
-     * @dev Calculate distance between two points using Haversine formula
-     * Coordinates are in microdegrees (degrees * 1e6)
-     * Returns distance in meters
-     */
-    function _calculateDistance(
-        int256 lat1,
-        int256 lng1,
-        int256 lat2,
-        int256 lng2
-    ) internal pure returns (uint256) {
-        // Convert to radians (with 1e6 scaling)
-        int256 dLat = (lat2 - lat1) * 314159265359 / (180 * 1000000 * 100000000);
-        int256 dLng = (lng2 - lng1) * 314159265359 / (180 * 1000000 * 100000000);
-
-        int256 a = (_sin(dLat / 2) ** 2 + 
-                    _cos(lat1 * 314159265359 / (180 * 1000000 * 100000000)) * 
-                    _cos(lat2 * 314159265359 / (180 * 1000000 * 100000000)) * 
-                    _sin(dLng / 2) ** 2);
-
-        int256 c = 2 * _atan2(_sqrt(a), _sqrt(1e18 - a));
-
-        return uint256(EARTH_RADIUS * uint256(c) / 1e9);
+    function getGeoEvent(bytes32 _eventId) external view returns (GeoEvent memory) {
+        return geoEvents[_eventId];
     }
-
-    // Simplified trig functions for Solidity (using approximations)
-    function _sin(int256 x) internal pure returns (int256) {
-        // Taylor series approximation for sin(x)
-        // sin(x) ≈ x - x^3/6 + x^5/120 - x^7/5040
-        int256 x2 = x * x / 1e9;
-        int256 x3 = x2 * x / 1e9;
-        int256 x5 = x3 * x2 / 1e9;
-        int256 x7 = x5 * x2 / 1e9;
-        return x - x3 / 6 + x5 / 120 - x7 / 5040;
+    
+    function getIdentityHistory(bytes32 _identityHash) external view returns (bytes32[] memory) {
+        return identityGeoHistory[_identityHash];
     }
-
-    function _cos(int256 x) internal pure returns (int256) {
-        // cos(x) = sin(x + π/2)
-        return _sin(x + 1570796327); // π/2 * 1e9
+    
+    function getCurrentZone(bytes32 _identityHash) external view returns (bytes32) {
+        return currentZone[_identityHash];
     }
-
-    function _sqrt(int256 x) internal pure returns (int256) {
-        if (x < 0) return 0;
-        int256 z = (x + 1) / 2;
-        int256 y = x;
-        while (z < y) {
-            y = z;
-            z = (x / z + z) / 2;
-        }
-        return y;
-    }
-
-    function _atan2(int256 y, int256 x) internal pure returns (int256) {
-        // Simplified atan2 approximation
-        // For precise calculations, consider using a library
-        if (x > 0) return _atan(y / x);
-        if (x < 0 && y >= 0) return _atan(y / x) + 3141592654;
-        if (x < 0 && y < 0) return _atan(y / x) - 3141592654;
-        if (x == 0 && y > 0) return 1570796327;
-        if (x == 0 && y < 0) return -1570796327;
-        return 0;
-    }
-
-    function _atan(int256 x) internal pure returns (int256) {
-        // Taylor series for atan(x)
-        // atan(x) ≈ x - x^3/3 + x^5/5 - x^7/7 (for |x| <= 1)
-        if (x > 1e9) return 1570796327 - _atan(1e18 / x);
-        if (x < -1e9) return -1570796327 - _atan(1e18 / x);
-        
-        int256 x2 = x * x / 1e9;
-        int256 x3 = x2 * x / 1e9;
-        int256 x5 = x3 * x2 / 1e9;
-        int256 x7 = x5 * x2 / 1e9;
-        
-        return x - x3 / 3 + x5 / 5 - x7 / 7;
+    
+    function getAccessRule(
+        bytes32 _zoneId,
+        bytes32 _identityHash
+    ) external view returns (AccessRule memory) {
+        return accessRules[_zoneId][_identityHash];
     }
 }

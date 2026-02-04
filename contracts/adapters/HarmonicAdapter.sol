@@ -1,331 +1,170 @@
 // SPDX-License-Identifier: MIT
-// Pillar-1: Soulbound tokens for device certification (ERC-5192)
-// Pillar-2: Antifragility - System strengthens with each biofeedback session
-// Pillar-3: Genius Channeled - Buckminster Fuller (synergetic whole-system wellness)
-// Pillar-4: Data Dignity for biometric data
-// Pillar-5: Side-channel resistance for HRV data
-// Pillar-6: Zettelkasten linking between wellness sessions
-// Pillar-7: Build for generational health tracking
-
-pragma solidity ^0.8.24;
-
-import "../SovereignIdentity.sol";
-import "../AccessGovernor.sol";
-import "../AuditTrail.sol";
-
 /**
  * @title HarmonicAdapter
- * @dev Biofeedback and wellness module adapter for Terracare
- *      - Device certification via soulbound pattern
- *      - HRV data hashes anchored on-chain
- *      - Session integrity with Merkle verification
- *      - Wellness credential issuance
+ * @notice Bridge for Harmonic biofeedback devices and sessions
+ * @dev Implements IHarmonicDevice for soulbound device certifications
  */
-contract HarmonicAdapter {
-    // ============ Structs ============
-    
-    struct DeviceCertification {
-        bytes32 deviceHash;         // Hash of device identifier
-        bytes32 firmwareHash;       // Hash of firmware version
-        uint256 certifiedAt;
-        uint256 expiresAt;
-        bool revoked;
-        bytes32 calibrationHash;    // Device calibration data hash
-    }
+pragma solidity ^0.8.24;
 
-    struct BiofeedbackSession {
-        bytes32 sessionHash;        // Hash of session data
-        bytes32 hrvDataHash;        // Heart rate variability data hash
-        bytes32 deviceHash;         // Device used
-        uint256 startedAt;
-        uint256 duration;           // Seconds
-        bytes32 protocolHash;       // Protocol used hash
-        uint256 wellnessScore;      // Computed wellness metric (0-10000)
-        bytes32 practitionerHash;   // Optional practitioner hash
-    }
+import {IHarmonicDevice} from "../interfaces/IHarmonicDevice.sol";
 
-    struct WellnessCredential {
-        bytes32 credentialHash;
-        uint256 issuedAt;
-        uint256 expiresAt;
-        bytes32 achievementHash;    // What was achieved
-        bool revoked;
-    }
-
-    // ============ State ============
+contract HarmonicAdapter is IHarmonicDevice {
     
-    SovereignIdentity public identity;
-    AccessGovernor public accessGovernor;
-    AuditTrail public auditTrail;
+    // ============ Storage ============
     
-    address public governance;
+    address public sovereignIdentity;
+    address public accessGovernor;
+    address public auditTrail;
     
     // Device hash => certification
-    mapping(bytes32 => DeviceCertification) public deviceCerts;
-    bytes32[] public certifiedDevices;
+    mapping(bytes32 => DeviceCertification) private certifications;
     
-    // patient => session hash => session
-    mapping(address => mapping(bytes32 => BiofeedbackSession)) public sessions;
-    mapping(address => bytes32[]) public patientSessions;
+    // User identity => session hashes
+    mapping(bytes32 => bytes32[]) private userSessions;
     
-    // patient => credential hash => credential (soulbound)
-    mapping(address => mapping(bytes32 => WellnessCredential)) public wellnessCredentials;
-    mapping(address => bytes32[]) public patientCredentials;
+    // Session hash => session data
+    mapping(bytes32 => SessionRecord) private sessions;
     
-    // Authorized practitioners
-    mapping(address => bool) public authorizedPractitioners;
+    // Authorized certifiers
+    mapping(address => bool) public certifiers;
     
-    // Protocol hashes
-    mapping(bytes32 => bool) public validProtocols;
-
-    // ============ Events ============
-    
-    event DeviceCertified(
-        bytes32 indexed deviceHash,
-        bytes32 firmwareHash,
-        uint256 expiresAt
-    );
-    
-    event DeviceRevoked(bytes32 indexed deviceHash, bytes32 reasonHash);
-    
-    event SessionRecorded(
-        address indexed patient,
-        bytes32 indexed sessionHash,
-        bytes32 deviceHash,
-        uint256 wellnessScore
-    );
-    
-    event WellnessCredentialIssued(
-        address indexed patient,
-        bytes32 indexed credentialHash,
-        bytes32 achievementHash
-    );
-
     // ============ Modifiers ============
     
-    modifier onlyGovernance() {
-        require(msg.sender == governance, "HarmonicAdapter: Not governance");
+    modifier onlyCertifier() {
+        require(certifiers[msg.sender], "HarmonicAdapter: Not certifier");
         _;
     }
-
-    modifier onlyAuthorizedPractitioner() {
-        require(
-            authorizedPractitioners[msg.sender] || msg.sender == governance,
-            "HarmonicAdapter: Not authorized"
-        );
-        _;
-    }
-
-    modifier onlyCertifiedDevice(bytes32 deviceHash) {
-        require(
-            deviceCerts[deviceHash].certifiedAt != 0 &&
-            !deviceCerts[deviceHash].revoked &&
-            deviceCerts[deviceHash].expiresAt > block.timestamp,
-            "HarmonicAdapter: Device not certified"
-        );
-        _;
-    }
-
+    
     // ============ Constructor ============
     
     constructor(
-        address _identity,
+        address _sovereignIdentity,
         address _accessGovernor,
         address _auditTrail
     ) {
-        identity = SovereignIdentity(_identity);
-        accessGovernor = AccessGovernor(_accessGovernor);
-        auditTrail = AuditTrail(_auditTrail);
-        governance = msg.sender;
+        sovereignIdentity = _sovereignIdentity;
+        accessGovernor = _accessGovernor;
+        auditTrail = _auditTrail;
+        certifiers[msg.sender] = true; // Deployer is initial certifier
     }
-
-    // ============ Device Certification (Soulbound Pattern) ============
     
-    /**
-     * @dev Certify a Harmonic device - soulbound certification
-     * Pillar-1: Soulbound tokens for device certification
-     */
+    // ============ Admin Functions ============
+    
+    function addCertifier(address _certifier) external {
+        require(certifiers[msg.sender], "HarmonicAdapter: Not authorized");
+        certifiers[_certifier] = true;
+    }
+    
+    function removeCertifier(address _certifier) external {
+        require(certifiers[msg.sender], "HarmonicAdapter: Not authorized");
+        certifiers[_certifier] = false;
+    }
+    
+    // ============ IHarmonicDevice Implementation ============
+    
     function certifyDevice(
-        bytes32 deviceHash,
-        bytes32 firmwareHash,
-        bytes32 calibrationHash,
-        uint256 validityDays
-    ) external onlyGovernance {
-        require(deviceCerts[deviceHash].certifiedAt == 0, "HarmonicAdapter: Already certified");
-
-        deviceCerts[deviceHash] = DeviceCertification({
-            deviceHash: deviceHash,
-            firmwareHash: firmwareHash,
+        bytes32 _deviceHash,
+        DeviceType _deviceType,
+        CertificationTier _tier,
+        uint256 _expiresAt,
+        bytes32 _firmwareHash
+    ) external override onlyCertifier returns (bool) {
+        require(_deviceHash != bytes32(0), "HarmonicAdapter: Invalid device hash");
+        require(certifications[_deviceHash].deviceHash == bytes32(0), "HarmonicAdapter: Already certified");
+        
+        DeviceCertification memory cert = DeviceCertification({
+            deviceHash: _deviceHash,
+            deviceType: _deviceType,
+            tier: _tier,
+            manufacturer: msg.sender,
             certifiedAt: block.timestamp,
-            expiresAt: block.timestamp + (validityDays * 1 days),
-            revoked: false,
-            calibrationHash: calibrationHash
+            expiresAt: _expiresAt,
+            isRevoked: false,
+            firmwareHash: _firmwareHash
         });
-
-        certifiedDevices.push(deviceHash);
-
-        auditTrail.createEntry(
-            address(0), // System-level entry
-            SovereignIdentity.SystemType.Harmonic,
-            keccak256("DEVICE_CERTIFIED"),
-            deviceHash,
-            new bytes32[](0)
+        
+        certifications[_deviceHash] = cert;
+        
+        emit DeviceCertified(
+            _deviceHash,
+            _deviceType,
+            _tier,
+            msg.sender,
+            _expiresAt
         );
-
-        emit DeviceCertified(deviceHash, firmwareHash, block.timestamp + (validityDays * 1 days));
+        
+        return true;
     }
-
-    function revokeDevice(bytes32 deviceHash, bytes32 reasonHash) external onlyGovernance {
-        require(deviceCerts[deviceHash].certifiedAt != 0, "HarmonicAdapter: Not certified");
-        deviceCerts[deviceHash].revoked = true;
-
-        auditTrail.createEntry(
-            address(0),
-            SovereignIdentity.SystemType.Harmonic,
-            keccak256("DEVICE_REVOKED"),
-            reasonHash,
-            new bytes32[](1)
-        );
-
-        emit DeviceRevoked(deviceHash, reasonHash);
-    }
-
-    function updateCalibration(bytes32 deviceHash, bytes32 newCalibrationHash) external onlyGovernance {
-        require(deviceCerts[deviceHash].certifiedAt != 0, "HarmonicAdapter: Not certified");
-        deviceCerts[deviceHash].calibrationHash = newCalibrationHash;
-    }
-
-    // ============ Session Recording ============
     
-    /**
-     * @dev Record biofeedback session - hash only, constant gas
-     * Pillar-5: Side-channel resistance for HRV data
-     */
+    function revokeCertification(
+        bytes32 _deviceHash,
+        bytes32 _reasonHash
+    ) external override onlyCertifier {
+        DeviceCertification storage cert = certifications[_deviceHash];
+        require(cert.deviceHash != bytes32(0), "HarmonicAdapter: Device not certified");
+        require(!cert.isRevoked, "HarmonicAdapter: Already revoked");
+        
+        cert.isRevoked = true;
+        
+        emit CertificationRevoked(_deviceHash, _reasonHash, block.timestamp);
+    }
+    
     function recordSession(
-        address patient,
-        bytes32 sessionHash,
-        bytes32 hrvDataHash,
-        bytes32 deviceHash,
-        uint256 duration,
-        bytes32 protocolHash,
-        uint256 wellnessScore,
-        bytes32 practitionerHash
-    ) external onlyCertifiedDevice(deviceHash) onlyAuthorizedPractitioner {
-        require(
-            identity.getProfile(patient).status == SovereignIdentity.IdentityStatus.Active,
-            "HarmonicAdapter: Patient not active"
-        );
-        require(validProtocols[protocolHash], "HarmonicAdapter: Invalid protocol");
-
-        sessions[patient][sessionHash] = BiofeedbackSession({
-            sessionHash: sessionHash,
-            hrvDataHash: hrvDataHash,
-            deviceHash: deviceHash,
-            startedAt: block.timestamp,
-            duration: duration,
-            protocolHash: protocolHash,
-            wellnessScore: wellnessScore,
-            practitionerHash: practitionerHash
+        bytes32 _sessionHash,
+        bytes32 _deviceHash,
+        bytes32 _userIdentity,
+        uint256 _duration,
+        bytes32 _metricsHash
+    ) external override returns (bool) {
+        require(_sessionHash != bytes32(0), "HarmonicAdapter: Invalid session hash");
+        require(isDeviceCertified(_deviceHash), "HarmonicAdapter: Device not certified");
+        require(sessions[_sessionHash].sessionHash == bytes32(0), "HarmonicAdapter: Session exists");
+        
+        SessionRecord memory session = SessionRecord({
+            sessionHash: _sessionHash,
+            deviceHash: _deviceHash,
+            userIdentity: _userIdentity,
+            startTime: block.timestamp,
+            duration: _duration,
+            metricsHash: _metricsHash
         });
-
-        patientSessions[patient].push(sessionHash);
-
-        // Link identity to Harmonic system
-        if (identity.getSystemIdentity(patient, SovereignIdentity.SystemType.Harmonic).systemId == bytes32(0)) {
-            identity.linkSystem(patient, SovereignIdentity.SystemType.Harmonic, sessionHash);
-        }
-
-        auditTrail.createEntry(
-            patient,
-            SovereignIdentity.SystemType.Harmonic,
-            keccak256("BIOFEEDBACK_SESSION"),
-            sessionHash,
-            new bytes32[](0)
+        
+        sessions[_sessionHash] = session;
+        userSessions[_userIdentity].push(_sessionHash);
+        
+        emit SessionRecorded(
+            _sessionHash,
+            _deviceHash,
+            _userIdentity,
+            block.timestamp
         );
-
-        emit SessionRecorded(patient, sessionHash, deviceHash, wellnessScore);
+        
+        return true;
     }
-
-    // ============ Wellness Credentials ============
     
-    /**
-     * @dev Issue soulbound wellness credential
-     */
-    function issueWellnessCredential(
-        address patient,
-        bytes32 credentialHash,
-        bytes32 achievementHash,
-        uint256 validityDays
-    ) external onlyAuthorizedPractitioner {
-        wellnessCredentials[patient][credentialHash] = WellnessCredential({
-            credentialHash: credentialHash,
-            issuedAt: block.timestamp,
-            expiresAt: validityDays > 0 ? block.timestamp + (validityDays * 1 days) : type(uint256).max,
-            achievementHash: achievementHash,
-            revoked: false
-        });
-
-        patientCredentials[patient].push(credentialHash);
-
-        // Issue via identity registry (soulbound)
-        identity.issueCredential(
-            patient,
-            credentialHash,
-            SovereignIdentity.SystemType.Harmonic,
-            validityDays > 0 ? block.timestamp + (validityDays * 1 days) : type(uint256).max
-        );
-
-        auditTrail.createEntry(
-            patient,
-            SovereignIdentity.SystemType.Harmonic,
-            keccak256("WELLNESS_CREDENTIAL_ISSUED"),
-            credentialHash,
-            new bytes32[](0)
-        );
-
-        emit WellnessCredentialIssued(patient, credentialHash, achievementHash);
+    function isDeviceCertified(bytes32 _deviceHash) public view override returns (bool) {
+        DeviceCertification storage cert = certifications[_deviceHash];
+        if (cert.deviceHash == bytes32(0)) return false;
+        if (cert.isRevoked) return false;
+        if (cert.expiresAt != 0 && block.timestamp > cert.expiresAt) return false;
+        return true;
     }
-
-    // ============ Protocol Management ============
     
-    function addProtocol(bytes32 protocolHash) external onlyGovernance {
-        validProtocols[protocolHash] = true;
+    function getCertification(
+        bytes32 _deviceHash
+    ) external view override returns (DeviceCertification memory) {
+        return certifications[_deviceHash];
     }
-
-    function removeProtocol(bytes32 protocolHash) external onlyGovernance {
-        validProtocols[protocolHash] = false;
-    }
-
-    // ============ Practitioner Management ============
     
-    function authorizePractitioner(address practitioner) external onlyGovernance {
-        authorizedPractitioners[practitioner] = true;
+    function getUserSessions(
+        bytes32 _userIdentity
+    ) external view override returns (bytes32[] memory sessionHashes) {
+        return userSessions[_userIdentity];
     }
-
-    function revokePractitioner(address practitioner) external onlyGovernance {
-        authorizedPractitioners[practitioner] = false;
-    }
-
+    
     // ============ View Functions ============
     
-    function getSession(address patient, bytes32 sessionHash) external view returns (BiofeedbackSession memory) {
-        return sessions[patient][sessionHash];
-    }
-
-    function getPatientSessions(address patient) external view returns (bytes32[] memory) {
-        return patientSessions[patient];
-    }
-
-    function getDeviceCert(bytes32 deviceHash) external view returns (DeviceCertification memory) {
-        return deviceCerts[deviceHash];
-    }
-
-    function isDeviceCertified(bytes32 deviceHash) external view returns (bool) {
-        DeviceCertification memory cert = deviceCerts[deviceHash];
-        return cert.certifiedAt != 0 && !cert.revoked && cert.expiresAt > block.timestamp;
-    }
-
-    function getWellnessCredential(address patient, bytes32 credentialHash) external view returns (WellnessCredential memory) {
-        return wellnessCredentials[patient][credentialHash];
+    function getSession(bytes32 _sessionHash) external view returns (SessionRecord memory) {
+        return sessions[_sessionHash];
     }
 }

@@ -16,9 +16,8 @@
  */
 pragma solidity ^0.8.24;
 
-import {IERC5192} from "@openzeppelin/contracts/interfaces/IERC5192.sol";
+import {IERC5192} from "../interfaces/IERC5192.sol";
 import {IERC721Metadata} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Metadata.sol";
-import {IERC2771Context} from "@openzeppelin/contracts/metatx/IERC2771Context.sol";
 import {LibDiamond} from "../libraries/LibDiamond.sol";
 
 /**
@@ -132,9 +131,6 @@ interface ISovereignIdentityEvents {
         uint256 timestamp
     );
     
-    /// @notice ERC-5192 Soulbound events
-    event Locked(uint256 indexed tokenId);
-    event Unlocked(uint256 indexed tokenId);
 }
 
 /**
@@ -145,6 +141,14 @@ contract SovereignIdentity is IERC5192, IERC721Metadata, ISovereignIdentityEvent
     
     string public constant name = "Terracare Sovereign Identity";
     string public constant symbol = "TSI";
+    
+    // ERC-165 interface support - hardcoded interface IDs for compatibility
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == 0xb45a3c0e || // IERC5192
+               interfaceId == 0x5b5e139f || // IERC721Metadata
+               interfaceId == 0x80ac58cd || // IERC721
+               interfaceId == 0x01ffc9a7;   // ERC-165
+    }
     
     // ============ Modifiers ============
     
